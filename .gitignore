@@ -1,0 +1,17 @@
+# REVA runtime state — sessions, memory, audit log, bots, automation, config.
+# Never commit: it contains per-project agent history and can contain secrets.
+.reva/
+
+# Local tooling state
+.mimosa/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs, temp files, env
+*.log
+*.tmp
+.env
+.env.*

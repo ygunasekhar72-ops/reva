@@ -1,0 +1,15 @@
+{
+  "name": "reva-harness",
+  "version": "1.0.0",
+  "description": "REVA — a zero-dependency, black & white AI agent harness. Terminal TUI + mobile PWA. Plugins, MCP, skills, subagents, multi-agent, bots, automation, memory-before-compaction, hardened security.",
+  "type": "module",
+  "bin": { "reva": "bin/reva.js" },
+  "engines": { "node": ">=18.17" },
+  "scripts": {
+    "start": "node bin/reva.js",
+    "tui": "node bin/reva.js",
+    "serve": "node bin/reva.js serve",
+    "test": "node --test"
+  },
+  "license": "MIT"
+}

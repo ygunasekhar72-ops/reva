@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <title>REVA</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- AUTH VIEW -->
+    <section id="view-auth" class="view">
+      <div class="auth-box">
+        <pre class="logo" aria-hidden="true">
+█▀▄ ▄▀▄ █▀▀ █   █▀█ ▄▀█
+█▄▀ █▀█ ██▄ █▄▄ █▀▄ █▀█</pre>
+        <p class="tagline">agent harness · terminal + mobile</p>
+
+        <div id="auth-existing">
+          <form id="login-form">
+            <label for="login-user">username</label>
+            <input id="login-user" name="username" autocomplete="username" required />
+            <label for="login-pass">password</label>
+            <input id="login-pass" name="password" type="password" autocomplete="current-password" required />
+            <button type="submit" class="btn primary">log in</button>
+          </form>
+        </div>
+
+        <div id="auth-bootstrap" class="hidden">
+          <p class="note">first run — create the admin account. The password also encrypts your API keys.</p>
+          <form id="bootstrap-form">
+            <label for="boot-user">username</label>
+            <input id="boot-user" name="username" autocomplete="username" required minlength="3" />
+            <label for="boot-pass">password (min 8 chars)</label>
+            <input id="boot-pass" name="password" type="password" autocomplete="new-password" required minlength="8" />
+            <button type="submit" class="btn primary">create account</button>
+          </form>
+        </div>
+        <p id="auth-error" class="error hidden"></p>
+      </div>
+    </section>
+
+    <!-- MAIN APP -->
+    <section id="view-main" class="view hidden">
+      <header class="topbar">
+        <span class="brand">REVA</span>
+        <span id="header-status" class="dim">ready</span>
+        <button id="logout-btn" class="btn ghost small" type="button">exit</button>
+      </header>
+
+      <main id="content">
+        <!-- CHAT TAB -->
+        <div id="tab-chat" class="tab">
+          <div id="chat-scroll">
+            <div id="messages"></div>
+          </div>
+          <div class="composer">
+            <textarea id="composer-input" rows="2" placeholder="describe a task… (Enter to send)"></textarea>
+            <button id="send-btn" class="btn primary" type="button">send</button>
+          </div>
+          <div id="composer-actions" class="row-actions">
+            <button class="btn ghost small" data-cmd="sessions" type="button">sessions</button>
+            <button class="btn ghost small" data-cmd="new-session" type="button">new</button>
+            <button id="abort-btn" class="btn ghost small hidden" type="button">stop</button>
+          </div>
+        </div>
+
+        <!-- SESSIONS TAB -->
+        <div id="tab-sessions" class="tab hidden">
+          <h2>sessions</h2>
+          <ul id="sessions-list" class="list"></ul>
+          <button id="new-session-btn" class="btn" type="button">new session</button>
+        </div>
+
+        <!-- BOTS TAB -->
+        <div id="tab-bots" class="tab hidden">
+          <h2>bots</h2>
+          <p class="note">Bots run on your own API keys and chosen models.</p>
+          <ul id="bots-list" class="list"></ul>
+          <div class="form-row">
+            <input id="bot-prompt" placeholder="task for selected bot…" />
+          </div>
+          <button id="bot-run-btn" class="btn" type="button" disabled>run bot</button>
+        </div>
+
+        <!-- MORE TAB -->
+        <div id="tab-more" class="tab hidden">
+          <h2>system</h2>
+          <div class="accordion" id="more-sections">
+            <details open>
+              <summary>providers &amp; keys</summary>
+              <div id="providers-box" class="box"></div>
+            </details>
+            <details>
+              <summary>skills</summary>
+              <ul id="skills-list" class="list"></ul>
+            </details>
+            <details>
+              <summary>plugins</summary>
+              <ul id="plugins-list" class="list"></ul>
+            </details>
+            <details>
+              <summary>extensions (mobile)</summary>
+              <ul id="extensions-list" class="list"></ul>
+              <div id="extension-cards"></div>
+            </details>
+            <details>
+              <summary>mcp servers</summary>
+              <div id="mcp-box" class="box"></div>
+              <button id="mcp-connect-btn" class="btn small" type="button">connect all</button>
+            </details>
+            <details>
+              <summary>memory</summary>
+              <pre id="memory-box" class="mono box"></pre>
+            </details>
+            <details>
+              <summary>automation</summary>
+              <ul id="automation-list" class="list"></ul>
+              <div class="form-row">
+                <input id="auto-name" placeholder="job name" />
+                <input id="auto-prompt" placeholder="prompt" />
+                <input id="auto-every" type="number" min="1" placeholder="every N min" />
+              </div>
+              <button id="auto-add-btn" class="btn small" type="button">add job</button>
+            </details>
+            <details>
+              <summary>audit log</summary>
+              <pre id="audit-box" class="mono box small-text"></pre>
+              <button id="audit-check-btn" class="btn small" type="button">verify chain</button>
+            </details>
+          </div>
+        </div>
+      </main>
+
+      <nav class="tabbar">
+        <button class="tabbtn active" data-tab="chat" type="button">chat</button>
+        <button class="tabbtn" data-tab="sessions" type="button">sessions</button>
+        <button class="tabbtn" data-tab="bots" type="button">bots</button>
+        <button class="tabbtn" data-tab="more" type="button">more</button>
+      </nav>
+    </section>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

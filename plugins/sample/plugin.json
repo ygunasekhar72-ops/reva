@@ -1,0 +1,7 @@
+{
+  "name": "sample",
+  "version": "1.0.0",
+  "description": "Sample REVA plugin: registers a word_count tool and greets new messages.",
+  "entry": "index.js",
+  "permissions": ["tools", "events"]
+}

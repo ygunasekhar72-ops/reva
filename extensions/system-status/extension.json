@@ -1,0 +1,7 @@
+{
+  "name": "system-status",
+  "version": "1.0.0",
+  "description": "Mobile extension: shows device/connection status card and a quick session command.",
+  "entry": "index.js",
+  "permissions": ["ui.cards", "ui.commands", "network"]
+}
