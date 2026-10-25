@@ -76,13 +76,16 @@ function safeEnv() {
 // Windows: a fixed helper script runs `taskkill /T`; the OS-assigned pid is
 // passed through the environment, so no variable reaches an argument list.
 const TREE_KILL_HELPER = `
-// Fixed-content REVA helper: kills a process tree by pid (from env).
+// Fixed-content REVA helper: kills a process tree by pid (from env) and waits
+// for taskkill to finish — exiting early can tear down the taskkill child
+// before it has walked the tree.
 const pid = Number(process.env.REVA_TREE_PID);
 if (Number.isInteger(pid) && pid > 0) {
-  require('child_process').spawn(
+  const taskkill = require('child_process').spawn(
     'taskkill', ['/pid', String(pid), '/T', '/F'],
     { stdio: 'ignore', windowsHide: true },
-  ).unref();
+  );
+  taskkill.on('exit', () => process.exit(0));
 }
 `;
 
