@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.reva.harness'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.reva.harness'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    // Release builds are signed in CI when the ANDROID_KEYSTORE_BASE64 secret
+    // is configured (see .github/workflows/android-build.yml). Locally without
+    // signing properties, release builds fall back to unsigned output.
+    if (project.hasProperty('REVA_STORE_FILE')) {
+        signingConfigs {
+            release {
+                storeFile file(REVA_STORE_FILE)
+                storePassword REVA_STORE_PASSWORD
+                keyAlias REVA_KEY_ALIAS
+                keyPassword REVA_KEY_PASSWORD
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (project.hasProperty('REVA_STORE_FILE')) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// Zero third-party dependencies: the app is a pure WebView shell over the
+// REVA PWA, using only the Android framework.
+dependencies {}

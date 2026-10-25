@@ -1,0 +1,77 @@
+# Builds the REVA Android app in the cloud — no local Android SDK needed.
+#
+# Run from the GitHub Actions tab ("Run workflow") or push a tag like v1.0.0.
+# Artifacts:
+#   app-debug.apk            — installable immediately (testing)
+#   app-release.apk          — signed when signing secrets are configured
+#   app-release.aab          — Play Store upload bundle (signed when configured)
+#
+# Signing (optional but required for production upload):
+#   repo secrets: ANDROID_KEYSTORE_BASE64 (base64 of your .jks),
+#                 ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+#   see docs/PLAYSTORE.md for the keytool command.
+
+name: android-build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Decode signing keystore
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        if: env.KS_B64 != ''
+        run: |
+          echo "$KS_B64" | base64 -d > "$HOME/reva-release.jks"
+          echo "REVA_STORE_FILE=$HOME/reva-release.jks" >> "$GITHUB_ENV"
+          echo "REVA_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "REVA_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "REVA_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+
+      - name: Build debug APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon
+
+      - name: Build release APK + AAB
+        working-directory: android
+        run: |
+          if [ -n "$REVA_STORE_FILE" ]; then
+            gradle assembleRelease bundleRelease --no-daemon \
+              -PREVA_STORE_FILE="$REVA_STORE_FILE" \
+              -PREVA_STORE_PASSWORD="$REVA_STORE_PASSWORD" \
+              -PREVA_KEY_ALIAS="$REVA_KEY_ALIAS" \
+              -PREVA_KEY_PASSWORD="$REVA_KEY_PASSWORD"
+          else
+            gradle assembleRelease bundleRelease --no-daemon
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: reva-android
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
