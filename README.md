@@ -147,13 +147,23 @@ The full default schema (thresholds, tool policies, security limits) lives in
 ## Test & verification
 
 ```bash
-node --test          # 100+ tests / 8 suites, all passing
+node --test          # 111 tests / 8 suites, all passing
 ```
 
 Suites: security adversarial (`test/security.test.js`), tools, providers (all 3 protocol
 flavors against a protocol-faithful mock), MCP (against a real MCP server process), agent
 loop/compaction/subagents, skills/plugins/extensions, server e2e (real HTTP+SSE), CLI/TUI
-process e2e. See `docs/SECURITY.md` for the threat model the tests enforce.
+process e2e. See `docs/SECURITY.md` for the threat model the tests enforce, and
+`docs/ENGINEERING-GAP-AUDIT.md` for the verified/partial/missing classification of every
+capability (audit date 2026-10-25).
+
+Notable hardening behaviors covered by tests: every `web_fetch` redirect hop is
+re-validated through the SSRF guard and response bodies are capped during download;
+shell commands killed on timeout/abort take their whole process tree with them
+(POSIX process group / Windows `taskkill /T`); server shutdown aborts in-flight agent
+runs and persists their terminal state; SSE disconnects stalled consumers instead of
+buffering without bound; provider retries never re-send output that was already
+streamed to the user.
 
 ## Docs
 
