@@ -38,12 +38,27 @@ jobs:
       - name: Accept licenses & install platform 34
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1" > /dev/null
 
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
+
+      - name: Fetch nodejs-mobile runtime (libnode)
+        run: |
+          curl -sL --fail -o /tmp/nodejs-mobile.zip \
+            https://github.com/nodejs-mobile/nodejs-mobile/releases/download/v18.20.4/nodejs-mobile-v18.20.4-android.zip
+          mkdir -p android/libs/nodejs
+          unzip -q -o /tmp/nodejs-mobile.zip -d android/libs/nodejs
+          ls android/libs/nodejs android/libs/nodejs/bin
+
+      - name: Bundle REVA runtime into APK assets
+        run: |
+          mkdir -p android/app/src/main/assets/nodejs-project
+          cp -r src public skills plugins package.json standalone.js \
+            android/app/src/main/assets/nodejs-project/
+          ls android/app/src/main/assets/nodejs-project
 
       - name: Decode signing keystore
         env:

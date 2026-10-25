@@ -5,6 +5,7 @@ plugins {
 android {
     namespace 'com.reva.harness'
     compileSdk 34
+    ndkVersion '26.1.10909125'
 
     defaultConfig {
         applicationId 'com.reva.harness'
@@ -12,6 +13,30 @@ android {
         targetSdk 34
         versionCode 1
         versionName '1.0.0'
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+        }
+        externalNativeBuild {
+            cmake {
+                // Points at the extracted nodejs-mobile release (fetched by CI)
+                arguments "-DNODE_LIBS_DIR=${projectDir}/../libs/nodejs"
+            }
+        }
+    }
+
+    // libnode.so per ABI comes from the nodejs-mobile release; the JNI bridge
+    // (native-lib) is compiled from src/main/cpp.
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ["${projectDir}/../libs/nodejs/bin"]
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
     }
 
     // Release builds are signed in CI when the ANDROID_KEYSTORE_BASE64 secret
@@ -43,6 +68,5 @@ android {
     }
 }
 
-// Zero third-party dependencies: the app is a pure WebView shell over the
-// REVA PWA, using only the Android framework.
+// Zero third-party Java dependencies: WebView shell + embedded Node runtime.
 dependencies {}

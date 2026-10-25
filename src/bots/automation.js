@@ -133,12 +133,16 @@ export class Scheduler {
     this.timer = null;
   }
 
+  // Launches every due job; resolves when the launched batch finishes, so
+  // callers (tests, graceful shutdown) can await it. Already-running jobs
+  // are skipped, never double-started.
   async tick() {
     const due = this.store.dueJobs();
+    const launched = [];
     for (const job of due) {
       if (this.running.has(job.id)) continue;
       this.running.add(job.id);
-      (async () => {
+      launched.push((async () => {
         try {
           this.onEvent?.({ type: 'automation_start', job: job.id, name: job.name });
           await this.runJob(job);
@@ -160,7 +164,8 @@ export class Scheduler {
         } finally {
           this.running.delete(job.id);
         }
-      })();
+      })());
     }
+    await Promise.allSettled(launched);
   }
 }

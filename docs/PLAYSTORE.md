@@ -1,9 +1,12 @@
 # REVA on Google Play — production checklist
 
 The `android/` directory is a complete, zero-dependency Android project that
-wraps REVA's web UI in a native shell. The GitHub Actions workflow
-(`.github/workflows/android-build.yml`) builds it in the cloud — you do not
-need Android Studio or the SDK on your machine.
+runs **the entire REVA harness on the phone itself** via an embedded Node.js
+runtime (nodejs-mobile v18.20.4, fetched at build time). The WebView talks to
+`127.0.0.1:7463` — no external server required. Connecting to a remote REVA
+server (PC on LAN / public host) remains available as a fallback mode.
+The GitHub Actions workflow (`.github/workflows/android-build.yml`) builds it
+in the cloud — you do not need Android Studio or the SDK on your machine.
 
 ## 1. Get an installable APK (5 minutes, no setup)
 
@@ -11,11 +14,11 @@ need Android Studio or the SDK on your machine.
 2. When it finishes, download the `reva-android` artifact.
 3. `app-debug.apk` installs directly on any Android 8+ phone
    (Settings → allow install from this source, first time only).
-4. In the app, enter your REVA server address, e.g.:
-   - PC on the same Wi-Fi: `http://192.168.x.x:7463` (start it with
-     `reva serve --host 0.0.0.0`)
-   - REVA in Termux on the same phone: `http://127.0.0.1:7463`
-   - Public server: `https://your-domain`
+4. The app starts REVA **on the device** — everything works offline:
+   chat with visible thinking, tools on the app workspace, skills, memory,
+   bots. Add a provider key in the app (System → providers & keys) and the
+   agent runs fully from your pocket. "Connect to remote" on the setup
+   screen points it at a REVA server on your PC instead, if you prefer.
 
 ## 2. Production signing (one-time)
 

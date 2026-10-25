@@ -432,10 +432,32 @@ export function sanitizeMessages(messages) {
   });
 }
 
+// Combine the caller's signal with a timeout without AbortSignal.any
+// (Node 20.3+): this codebase also runs on Node 18 inside the embedded
+// Android runtime (nodejs-mobile), so keep to Node-18 APIs.
 function withTimeout(signal, timeoutMs) {
-  const t = AbortSignal.timeout(timeoutMs ?? 120000);
-  if (!signal) return t;
-  return AbortSignal.any([signal, t]);
+  const controller = new AbortController();
+  const cleanups = [];
+  controller.signal.addEventListener('abort', () => {
+    for (const fn of cleanups) fn();
+  }, { once: true });
+
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else {
+      const onAbort = () => controller.abort();
+      signal.addEventListener('abort', onAbort, { once: true });
+      cleanups.push(() => signal.removeEventListener('abort', onAbort));
+    }
+  }
+  const timeout = AbortSignal.timeout(timeoutMs ?? 120000);
+  if (timeout.aborted) controller.abort();
+  else {
+    const onTimeout = () => controller.abort();
+    timeout.addEventListener('abort', onTimeout, { once: true });
+    cleanups.push(() => timeout.removeEventListener('abort', onTimeout));
+  }
+  return controller.signal;
 }
 
 function firstLine(text, max) {

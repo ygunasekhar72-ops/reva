@@ -419,16 +419,10 @@ test('automation: scheduler runs due jobs through the harness', async () => {
       tickMs: 1000000, // no background ticking; call tick() manually
       runJob: async (job) => { await harness.runBot(job.bot, job.prompt, { mode: 'server' }); },
     });
+    // tick() awaits the launched batch — deterministic, no polling needed
     await scheduler.tick();
-    // the job runs async; poll until it reports a terminal status (generous
-    // deadline: the full suite runs 8 files in parallel)
     const jobId = harness.automation.list().find((j) => j.name === 'sweep').id;
-    let updated = null;
-    for (let i = 0; i < 300; i++) {
-      updated = harness.automation.get(jobId);
-      if (updated.last_status === 'ok' || updated.last_status === 'error') break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    const updated = harness.automation.get(jobId);
     assert.equal(updated.last_status, 'ok');
     assert.equal(updated.run_count, 1);
     assert.ok(events.some((e) => e.type === 'automation_done'));

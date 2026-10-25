@@ -18,18 +18,24 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.io.File;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URL;
 
 /**
- * REVA Android shell: a minimal WebView over a REVA server (your own machine,
- * a LAN box, or REVA running in Termux on this same phone at 127.0.0.1).
- * First run asks for the server URL; the choice is remembered locally.
- * Zero third-party dependencies.
+ * REVA standalone app: the entire harness runs INSIDE the app via an embedded
+ * Node.js runtime (nodejs-mobile). The WebView talks to 127.0.0.1:7463 — no
+ * external server is needed. A "connect to remote" fallback is kept for
+ * users who run REVA on a PC instead.
  */
 public class MainActivity extends Activity {
 
     private static final String PREFS = "reva";
-    private static final String KEY_SERVER = "server_url";
+    private static final String KEY_MODE = "mode";           // "standalone" | "remote"
+    private static final String KEY_SERVER = "server_url";   // for remote mode
+    private static final String LOCAL_URL = "http://127.0.0.1:7463";
 
     private SharedPreferences prefs;
     private WebView web;
@@ -37,6 +43,8 @@ public class MainActivity extends Activity {
     private LinearLayout setup;
     private EditText urlInput;
     private TextView status;
+    private NodeRunner nodeRunner;
+    private boolean nodeStarted = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -44,13 +52,110 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         buildWebView();
         buildSetupUi();
-        String saved = prefs.getString(KEY_SERVER, "");
-        if (saved.isEmpty()) {
-            showSetup(null);
-        } else {
-            openServer(saved);
+
+        String mode = prefs.getString(KEY_MODE, "standalone");
+        if ("remote".equals(mode)) {
+            String saved = prefs.getString(KEY_SERVER, "");
+            if (!saved.isEmpty()) {
+                showWeb(saved);
+                return;
+            }
+        }
+        startStandalone();
+    }
+
+    // ---- standalone mode ----------------------------------------------------
+
+    private void startStandalone() {
+        showSetupStatus("Starting REVA on-device…");
+        setContentView(setupRoot);
+        try {
+            copyAssetProject();
+            if (!nodeStarted) {
+                nodeRunner = new NodeRunner();
+                nodeRunner.start(new File(getFilesDir(), "nodejs-project/standalone.js").getAbsolutePath());
+                nodeStarted = true;
+            }
+            new Thread(() -> {
+                if (waitUntilHealthy(60)) { // up to ~15s: first run initializes dirs
+                    runOnUiThread(() -> showWeb(LOCAL_URL));
+                } else {
+                    runOnUiThread(() -> showSetup("Embedded REVA did not start. Retry, or connect to a server on your network."));
+                }
+            }, "reva-health").start();
+        } catch (Exception e) {
+            showSetup("Failed to start embedded REVA: " + e.getMessage());
         }
     }
+
+    /** Copies the bundled REVA runtime from APK assets to app storage. */
+    private void copyAssetProject() throws Exception {
+        File target = new File(getFilesDir(), "nodejs-project");
+        deleteRecursive(target);
+        copyAssetDir("", target);
+    }
+
+    private void copyAssetDir(String assetPath, File toDir) throws Exception {
+        toDir.mkdirs();
+        String[] entries = getAssets().list(assetPath.isEmpty() ? "nodejs-project" : "nodejs-project/" + assetPath);
+        if (entries == null) return;
+        for (String entry : entries) {
+            String childAsset = assetPath.isEmpty() ? entry : assetPath + "/" + entry;
+            File childFile = new File(toDir, entry);
+            if (getAssets().list("nodejs-project/" + childAsset).length == 0) {
+                try (InputStream in = getAssets().open("nodejs-project/" + childAsset);
+                     OutputStream out = new java.io.FileOutputStream(childFile)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+            } else {
+                copyAssetDir(childAsset, childFile);
+            }
+        }
+    }
+
+    private static void deleteRecursive(File f) {
+        File[] children = f.listFiles();
+        if (children != null) for (File c : children) deleteRecursive(c);
+        f.delete();
+    }
+
+    /** Polls http://127.0.0.1:7463/health until it answers or attempts run out. */
+    private boolean waitUntilHealthy(int attempts) {
+        for (int i = 0; i < attempts; i++) {
+            try {
+                HttpURLConnection conn = (HttpURLConnection)
+                        new URL(LOCAL_URL + "/health").openConnection();
+                conn.setConnectTimeout(500);
+                conn.setReadTimeout(500);
+                int code = conn.getResponseCode();
+                conn.disconnect();
+                if (code == 200) return true;
+            } catch (Exception ignored) {
+            }
+            try {
+                Thread.sleep(250);
+            } catch (InterruptedException e) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    // ---- remote mode (fallback) ----------------------------------------------
+
+    private void connectRemote() {
+        String url = normalize(urlInput.getText().toString());
+        if (url == null) {
+            status.setText("Enter a valid address, e.g. http://192.168.1.20:7463");
+            return;
+        }
+        prefs.edit().putString(KEY_MODE, "remote").putString(KEY_SERVER, url).apply();
+        showWeb(url);
+    }
+
+    // ---- shared UI -----------------------------------------------------------
 
     private void buildWebView() {
         web = new WebView(this);
@@ -62,17 +167,25 @@ public class MainActivity extends Activity {
             @Override
             public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError err) {
                 if (req.isForMainFrame()) {
-                    showSetup("REVA server unreachable — check the address, make sure 'reva serve' is running, and that the phone is on the same network.");
+                    String mode = prefs.getString(KEY_MODE, "standalone");
+                    if ("standalone".equals(mode)) {
+                        // The embedded server died (device reboot clears the
+                        // process but not the activity stack) — restart it.
+                        startStandalone();
+                    } else {
+                        showSetup("Server unreachable — check the address and that 'reva serve' is running.");
+                    }
                 }
             }
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 Uri uri = req.getUrl();
-                String serverHost = Uri.parse(prefs.getString(KEY_SERVER, "")).getHost();
+                String currentHost = prefs.getString(KEY_MODE, "standalone").equals("remote")
+                        ? Uri.parse(prefs.getString(KEY_SERVER, "")).getHost()
+                        : "127.0.0.1";
                 String host = uri.getHost();
-                if (host == null || serverHost == null || !host.equals(serverHost)) {
-                    // External link (e.g. docs opened from the PWA) → system browser
+                if (host == null || currentHost == null || !host.equals(currentHost)) {
                     try {
                         startActivity(new Intent(Intent.ACTION_VIEW, uri));
                     } catch (Exception ignored) {
@@ -82,6 +195,11 @@ public class MainActivity extends Activity {
                 return false;
             }
         });
+    }
+
+    private void showWeb(String url) {
+        setContentView(web);
+        web.loadUrl(url);
     }
 
     private void buildSetupUi() {
@@ -99,24 +217,36 @@ public class MainActivity extends Activity {
         setup.addView(title);
 
         TextView tagline = new TextView(this);
-        tagline.setText("AGENT HARNESS");
+        tagline.setText("AGENT HARNESS — STANDALONE");
         tagline.setTextColor(0xFF8A8A8A);
         tagline.setTextSize(11);
         tagline.setLetterSpacing(0.3f);
         tagline.setPadding(0, dp(2), 0, dp(20));
         setup.addView(tagline);
 
-        TextView hint = new TextView(this);
-        String text = "Connect to your REVA server.\n\n"
-                + "• PC on the same Wi-Fi:  http://192.168.x.x:7463\n"
-                + "• REVA in Termux on this phone:  http://127.0.0.1:7463\n"
-                + "• Public server:  https://your-domain";
-        hint.setText(text);
-        hint.setTextColor(0xFF8A8A8A);
-        hint.setTextSize(13);
-        hint.setLineSpacing(dp(2), 1f);
-        hint.setPadding(0, 0, 0, dp(20));
-        setup.addView(hint);
+        status = new TextView(this);
+        status.setTextColor(Color.WHITE);
+        status.setTextSize(14);
+        status.setLineSpacing(dp(2), 1f);
+        status.setPadding(0, 0, 0, dp(20));
+        setup.addView(status);
+
+        Button retry = new Button(this);
+        retry.setText("START ON-DEVICE");
+        retry.setTextColor(Color.BLACK);
+        retry.setBackgroundColor(Color.WHITE);
+        retry.setOnClickListener(v -> {
+            prefs.edit().putString(KEY_MODE, "standalone").apply();
+            startStandalone();
+        });
+        setup.addView(retry);
+
+        TextView or = new TextView(this);
+        or.setText("— or connect to a server on your network —");
+        or.setTextColor(0xFF8A8A8A);
+        or.setTextSize(12);
+        or.setPadding(0, dp(20), 0, dp(12));
+        setup.addView(or);
 
         urlInput = new EditText(this);
         urlInput.setHint("http://192.168.1.20:7463");
@@ -126,18 +256,12 @@ public class MainActivity extends Activity {
         urlInput.setTextSize(15);
         setup.addView(urlInput);
 
-        Button connect = new Button(this);
-        connect.setText("CONNECT");
-        connect.setTextColor(Color.BLACK);
-        connect.setBackgroundColor(Color.WHITE);
-        connect.setOnClickListener(v -> openServer(urlInput.getText().toString()));
-        setup.addView(connect);
-
-        status = new TextView(this);
-        status.setTextColor(Color.WHITE);
-        status.setTextSize(13);
-        status.setPadding(0, dp(16), 0, 0);
-        setup.addView(status);
+        Button remote = new Button(this);
+        remote.setText("CONNECT TO REMOTE");
+        remote.setTextColor(Color.WHITE);
+        remote.setBackgroundColor(0xFF1A1A1A);
+        remote.setOnClickListener(v -> connectRemote());
+        setup.addView(remote);
 
         ScrollView scroller = new ScrollView(this);
         scroller.addView(setup);
@@ -150,15 +274,8 @@ public class MainActivity extends Activity {
         setContentView(setupRoot);
     }
 
-    private void openServer(String raw) {
-        String url = normalize(raw);
-        if (url == null) {
-            status.setText("Enter a valid address, e.g. http://192.168.1.20:7463");
-            return;
-        }
-        prefs.edit().putString(KEY_SERVER, url).apply();
-        setContentView(web);
-        web.loadUrl(url);
+    private void showSetupStatus(String message) {
+        if (message != null) status.setText(message);
     }
 
     private String normalize(String raw) {
@@ -166,12 +283,7 @@ public class MainActivity extends Activity {
         if (u.isEmpty()) return null;
         if (!u.startsWith("http://") && !u.startsWith("https://")) u = "http://" + u;
         while (u.endsWith("/")) u = u.substring(0, u.length() - 1);
-        try {
-            new URL(u);
-        } catch (Exception e) {
-            return null;
-        }
-        return u;
+        return u.matches("https?://[^\\s]+") ? u : null;
     }
 
     @Override
