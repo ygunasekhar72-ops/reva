@@ -5,6 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fsp from 'node:fs/promises';
+import path from 'node:path';
 
 import { isolateHome, pushHome, restoreHome, makeWorkspace, cleanupDir } from '../testkit/env.js';
 isolateHome(test);
@@ -28,7 +29,7 @@ async function bootServer({ steps = [] } = {}) {
   const server = new RevaServer({ harness, host: '127.0.0.1', port: 0 });
   const addr = await server.listen();
   const base = `http://127.0.0.1:${addr.port}`;
-  return { ws, mock, harness, server, base, close: async () => {
+  return { ws, mock, harness, server, base, savedHome, close: async () => {
     await server.close(); await mock.close(); await cleanupDir(ws); restoreHome(savedHome, null);
   } };
 }
@@ -431,6 +432,90 @@ test('server: MCP endpoints report configured servers', async () => {
   } finally {
     await s.close();
   }
+});
+
+test('server: close() aborts running agents and persists their terminal state', async () => {
+  const s = await bootServer({ steps: [{ hang: true }] });
+  try {
+    const anon = api(s.base, null);
+    await anon('/api/auth/bootstrap', { method: 'POST', body: { username: 'admin', password: 'admin-pass-123' } });
+    const login = await anon('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'admin-pass-123' } });
+    const authed = api(s.base, login.data.token);
+    const created = await authed('/api/sessions', { method: 'POST', body: {} });
+    const sessionId = created.data.id;
+    await authed(`/api/sessions/${sessionId}/messages`, { method: 'POST', body: { text: 'this will hang' } });
+    // The run is now waiting on the hanging provider. Shutdown must abort it
+    // and persist an aborted terminal event before closing.
+    await s.server.close();
+    const logFile = path.join(s.ws, '.reva', 'sessions', `${sessionId}.jsonl`);
+    const raw = await fsp.readFile(logFile, 'utf8');
+    const events = raw.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const errorEvent = events.find((e) => e.type === 'session_error');
+    assert.ok(errorEvent, 'aborted run must persist a terminal session_error event');
+    assert.equal(errorEvent.aborted, true);
+    assert.equal(events.some((e) => e.type === 'session_done'), false, 'no completed terminal event after abort');
+  } finally {
+    await s.mock.close();
+    await cleanupDir(s.ws);
+    restoreHome(s.savedHome, null);
+  }
+});
+
+test('server: SSE disconnects a stalled consumer instead of buffering without bound', async () => {
+  const s = await bootServer();
+  try {
+    const anon = api(s.base, null);
+    await anon('/api/auth/bootstrap', { method: 'POST', body: { username: 'admin', password: 'admin-pass-123' } });
+    const login = await anon('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'admin-pass-123' } });
+    const authed = api(s.base, login.data.token);
+    const created = await authed('/api/sessions', { method: 'POST', body: {} });
+    const sessionId = created.data.id;
+    const session = await s.server._getSession(sessionId);
+
+    // Fake a stalled consumer: write() reports growing buffer, never drains.
+    let destroyed = false;
+    const fakeRes = {
+      headersSent: false,
+      writableLength: 0,
+      destroyed: false,
+      writeHead() { this.headersSent = true; },
+      write() { this.writableLength += 2048; return false; },
+      destroy() { this.destroyed = true; },
+    };
+    const handlers = {};
+    const fakeReq = { on: (ev, fn) => { handlers[ev] = fn; } };
+
+    await s.server._sse(fakeReq, fakeRes, sessionId, -1);
+    // Flood far past the 1 MB bound with synthetic events.
+    for (let i = 0; i < 800; i++) {
+      session.eventLog.append({ type: 'synthetic', payload: 'x'.repeat(2048) }).catch(() => {});
+      if (fakeRes.destroyed) break;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(fakeRes.destroyed, true, 'stalled SSE consumer must be disconnected');
+    handlers.close?.();
+  } finally {
+    await s.server.close();
+    await s.mock.close();
+    await cleanupDir(s.ws);
+    restoreHome(s.savedHome, null);
+  }
+});
+
+test('event log: schema version field present, unknown types tolerated on rebuild', async () => {
+  const { rebuildMessages } = await import('../src/agent/agent.js');
+  const { EventLog } = await import('../src/agent/events.js');
+  const log = new EventLog(null); // in-memory only
+  await log.append({ type: 'user_message', text: 'hi' });
+  await log.append({ type: 'something_from_the_future', data: { a: 1 } });
+  const [first] = log.all();
+  assert.equal(first.v, 1, 'schema version stamped on every event');
+  const messages = rebuildMessages([
+    { type: 'user_message', text: 'hi' },
+    { type: 'something_from_the_future', data: { a: 1 } },
+    { type: 'assistant_message', text: 'done' },
+  ]);
+  assert.equal(messages.length, 2, 'unknown event types are ignored on rebuild');
 });
 
 test('server: clientIp helper', () => {

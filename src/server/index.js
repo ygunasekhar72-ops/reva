@@ -79,8 +79,19 @@ export class RevaServer {
   }
 
   async close() {
-    if (!this.server) return;
-    await new Promise((resolve) => this.server.close(resolve));
+    // Graceful shutdown: abort every running agent run first — a closed HTTP
+    // server does not stop in-flight provider requests, tool executions, or
+    // subagents, and half-finished runs must reach their aborted terminal
+    // state (persisted) before the process goes away. Idempotent.
+    for (const entry of this.runningRuns.values()) {
+      try { entry.abort(); } catch { /* already aborted */ }
+    }
+    await Promise.allSettled([...this.runningRuns.values()].map((e) => e.promise));
+    if (this.server) {
+      const server = this.server;
+      this.server = null;
+      await new Promise((resolve) => server.close(resolve));
+    }
     await this.harness.shutdown();
   }
 
@@ -429,8 +440,16 @@ export class RevaServer {
       connection: 'keep-alive',
       'x-accel-buffering': 'no',
     });
+    // Slow-client bound: if a consumer stops reading, res.write buffers
+    // without bound. Past REVA_MAX_SSE_BUFFER we disconnect — the client
+    // reconnects with its cursor and replays from the persistent log.
+    const MAX_SSE_BUFFERED_BYTES = 1024 * 1024;
     const send = (event) => {
       try {
+        if (res.writableLength > MAX_SSE_BUFFERED_BYTES) {
+          res.destroy();
+          return;
+        }
         res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`);
       } catch { /* closed */ }
     };

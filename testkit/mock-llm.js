@@ -13,6 +13,7 @@ export const DUMMY_KEY = 'dummy-test-key';
 export function createMockLlm({ port = 0 } = {}) {
   const steps = [];
   const requests = [];
+  const hanging = new Set();
 
   const server = http.createServer((req, res) => {
     let body = '';
@@ -28,6 +29,15 @@ export function createMockLlm({ port = 0 } = {}) {
       });
 
       const step = steps.length > 0 ? steps.shift() : { content: 'mock: done' };
+
+      if (step.hang) {
+        // Simulates a provider that accepts the request and never responds —
+        // for shutdown/abort tests. Cleaned up when the mock closes.
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(': open\n\n');
+        hanging.add(res);
+        return;
+      }
 
       if (step.error) {
         res.writeHead(step.error.status, { 'content-type': 'application/json' });
@@ -180,7 +190,13 @@ export function createMockLlm({ port = 0 } = {}) {
     steps,
     requests,
     listen: () => new Promise((resolve) => server.listen(port, '127.0.0.1', resolve)),
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => new Promise((resolve) => {
+      for (const res of hanging) {
+        try { res.end(); } catch { /* already gone */ }
+      }
+      hanging.clear();
+      server.close(resolve);
+    }),
     address: () => server.address(),
     get url() {
       const a = server.address();

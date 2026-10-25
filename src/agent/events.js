@@ -27,7 +27,9 @@ export class EventLog {
   }
 
   async append(event) {
-    const entry = { seq: this.events.length, ts: Date.now(), ...event };
+    // v = event schema version. Consumers must tolerate unknown future event
+    // types (rebuildMessages already does); unknown fields may appear.
+    const entry = { v: 1, seq: this.events.length, ts: Date.now(), ...event };
     this.events.push(entry);
     // Subscribers are notified synchronously BEFORE any await: concurrent
     // appends (streaming deltas) must reach consumers in event order. The
