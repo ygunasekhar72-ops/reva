@@ -141,31 +141,68 @@ export const webFetchTool = {
   },
   async execute(args, ctx) {
     const webCfg = ctx.config?.get('tools.web') ?? {};
-    const url = await guardUrl(args.url, {
+    const policy = {
       allowPrivate: webCfg.allow_private_addresses === true,
       allowedHosts: webCfg.allowed_hosts ?? [],
       blockedHosts: webCfg.blocked_hosts ?? [],
-    });
+    };
+    let currentUrl = await guardUrl(args.url, policy);
     const maxBytes = Math.min(5 * 1024 * 1024, args.max_bytes ?? webCfg.max_bytes ?? 2 * 1024 * 1024);
 
-    ctx.emit?.({ type: 'web_fetch', url: url.toString() });
-    if (ctx.audit) await ctx.audit.record(ctx.session?.actor ?? 'agent', 'web.fetch', { url: url.toString() });
+    ctx.emit?.({ type: 'web_fetch', url: currentUrl.toString() });
+    if (ctx.audit) await ctx.audit.record(ctx.session?.actor ?? 'agent', 'web.fetch', { url: currentUrl.toString() });
 
-    const response = await fetch(url, {
-      headers: {
-        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 REVA/1.0',
-        accept: 'text/html,application/json,text/plain;q=0.9,*/*;q=0.5',
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(30000),
-    });
+    // Manual redirect handling: every hop is re-validated through the full
+    // SSRF policy, so a public URL cannot bounce the fetch to a private or
+    // metadata address behind the guard.
+    const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+    let response;
+    let hops = 0;
+    for (;;) {
+      response = await fetch(currentUrl, {
+        headers: {
+          'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 REVA/1.0',
+          accept: 'text/html,application/json,text/plain;q=0.9,*/*;q=0.5',
+        },
+        redirect: 'manual',
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!REDIRECT_STATUSES.has(response.status)) break;
+      const location = response.headers.get('location');
+      try { await response.body?.cancel(); } catch { /* socket already gone */ }
+      if (!location) break;
+      hops += 1;
+      if (hops > 5) {
+        throw new Error(`too many redirects (>${5}) fetching ${currentUrl.host}${currentUrl.pathname}`);
+      }
+      currentUrl = await guardUrl(new URL(location, currentUrl).toString(), policy);
+    }
+
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status} fetching ${url.host}${url.pathname}`);
+      throw new Error(`HTTP ${response.status} fetching ${currentUrl.host}${currentUrl.pathname}`);
     }
     const contentType = response.headers.get('content-type') ?? '';
-    const buf = Buffer.from(await response.arrayBuffer());
-    const capped = buf.subarray(0, maxBytes);
-    const text = capped.toString('utf8');
+
+    // Bounded body read: the byte budget is enforced during the download
+    // (decompressed), not after it — a huge or gzip-expanded body can never
+    // be fully materialized in memory.
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    let truncated = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        truncated = true;
+        try { await reader.cancel(); } catch { /* stream already closed */ }
+        break;
+      }
+      chunks.push(Buffer.from(value));
+    }
+    const buf = Buffer.concat(chunks);
+    const text = buf.toString('utf8');
 
     let body;
     if (contentType.includes('application/json')) {
@@ -176,10 +213,12 @@ export const webFetchTool = {
       body = text;
     }
     return {
-      text: `${truncate(body, 12000)}${buf.length > maxBytes ? '\n[truncated]' : ''}`,
-      url: response.url ?? url.toString(),
+      text: `${truncate(body, 12000)}${truncated ? '\n[truncated]' : ''}`,
+      url: currentUrl.toString(),
       content_type: contentType,
-      bytes: buf.length,
+      bytes: total,
+      truncated,
+      redirects: hops,
     };
   },
 };

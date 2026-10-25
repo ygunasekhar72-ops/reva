@@ -270,6 +270,112 @@ test('ddg html parser: extracts results, decodes uddg links and entities', () =>
   assert.equal(results[1].url, 'https://direct.example.org/');
 });
 
+test('web_fetch: redirect hops are re-validated — SSRF bypass via redirect is refused', async () => {
+  // Server on 127.0.0.1 redirects to a private address NOT covered by the
+  // initial allowlist: the guard must refuse the redirect target.
+  const { server, port } = await serveOnce((req, res) => {
+    if (req.url === '/bounce') {
+      res.writeHead(302, { location: `http://127.0.0.1:${port}/secret` });
+      res.end();
+      return;
+    }
+    if (req.url === '/secret') {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('TOP SECRET METADATA');
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  try {
+    const cfg = new Config({});
+    // Initial host allowlisted; the redirect target (127.0.0.1) is not.
+    cfg.data.tools.web.allowed_hosts = ['localhost'];
+    cfg.data.tools.web.allow_private_addresses = false;
+    const ctx = ctxFor(await makeWorkspace('web-redirect-ssrf'), { config: cfg });
+    await assert.rejects(
+      async () => webFetchTool.execute({ url: `http://localhost:${port}/bounce` }, ctx),
+      /private address/,
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('web_fetch: valid redirect chain is followed and reported', async () => {
+  const { server, port } = await serveOnce((req, res) => {
+    if (req.url === '/a') {
+      res.writeHead(302, { location: '/b' });
+      res.end();
+    } else if (req.url === '/b') {
+      res.writeHead(301, { location: '/c' });
+      res.end();
+    } else {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('reached the end');
+    }
+  });
+  try {
+    const cfg = new Config({});
+    cfg.data.tools.web.allow_private_addresses = true;
+    const result = await webFetchTool.execute(
+      { url: `http://127.0.0.1:${port}/a` },
+      ctxFor(await makeWorkspace('web-redirect-ok'), { config: cfg }),
+    );
+    assert.match(result.text, /reached the end/);
+    assert.equal(result.redirects, 2);
+  } finally {
+    server.close();
+  }
+});
+
+test('web_fetch: redirect loops are bounded', async () => {
+  const { server, port } = await serveOnce((req, res) => {
+    res.writeHead(302, { location: '/loop' }); // always redirects to itself
+    res.end();
+  });
+  try {
+    const cfg = new Config({});
+    cfg.data.tools.web.allow_private_addresses = true;
+    await assert.rejects(
+      async () => webFetchTool.execute(
+        { url: `http://127.0.0.1:${port}/loop` },
+        ctxFor(await makeWorkspace('web-redirect-loop'), { config: cfg }),
+      ),
+      /too many redirects/,
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('web_fetch: oversized bodies are truncated during download, not materialized', async () => {
+  const { server, port } = await serveOnce((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/octet-stream' });
+    // 8 MB in 64 KB chunks — far beyond the 1 MB budget below
+    const chunk = Buffer.alloc(64 * 1024, 0x41);
+    let sent = 0;
+    const timer = setInterval(() => {
+      if (sent >= 128) { clearInterval(timer); res.end(); return; }
+      res.write(chunk);
+      sent += 1;
+    }, 5);
+    res.on('close', () => clearInterval(timer));
+  });
+  try {
+    const cfg = new Config({});
+    cfg.data.tools.web.allow_private_addresses = true;
+    const result = await webFetchTool.execute(
+      { url: `http://127.0.0.1:${port}/big`, max_bytes: 1024 * 1024 },
+      ctxFor(await makeWorkspace('web-big'), { config: cfg }),
+    );
+    assert.equal(result.truncated, true);
+    assert.ok(result.bytes <= 1024 * 1024 + 64 * 1024, 'read must stop at the budget');
+  } finally {
+    server.close();
+  }
+});
+
 test('htmlToText: strips scripts/styles, keeps line structure', () => {
   const text = htmlToText('<div>line1</div><script>bad()</script><p>line2</p><style>.c{}</style><div>line3</div>');
   assert.match(text, /line1/);
