@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 
@@ -122,6 +123,29 @@ test('exec tool: dangerous command needs confirmation; blocked commands never ru
     () => execTool.execute({ command: 'mkfs.ext4 /dev/sda', confirmed: true }, ctx),
     /refused/,
   );
+});
+
+test('exec tool: timeout kills the whole process tree (no orphaned grandchild)', async () => {
+  const ws = await makeWorkspace('exec-tree');
+  // grandchild: writes a marker 3 s after starting, then lingers
+  await fs.writeFile(path.join(ws, 'grand.js'),
+    "setTimeout(() => require('fs').writeFileSync(process.env.MARKER, '1'), 3000);\n" +
+    "setTimeout(() => {}, 20000);\n");
+  // child: spawns the grandchild immediately, then stays alive
+  await fs.writeFile(path.join(ws, 'child.js'),
+    "const cp = require('child_process');\n" +
+    "cp.spawn(process.execPath, ['grand.js'], { cwd: __dirname, stdio: 'ignore', env: process.env }).unref();\n" +
+    "setTimeout(() => {}, 20000);\n");
+  const marker = path.join(ws, 'marker.txt');
+  process.env.MARKER = marker;
+
+  const result = await execTool.execute({ command: 'node child.js', timeout_ms: 500 }, ctxFor(ws));
+  assert.equal(result.timed_out, true);
+  // Give the orphaned grandchild its full window: if tree-kill failed, the
+  // marker appears here.
+  await new Promise((r) => setTimeout(r, 3500));
+  assert.equal(existsSync(marker), false, 'grandchild must have been killed with the tree');
+  await cleanupDir(ws);
 });
 
 test('exec tool: disabled over the server by default, and via config', async () => {

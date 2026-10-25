@@ -1,6 +1,9 @@
 // exec tool: run a shell command inside the workspace. Guarded by the command
 // guard (block/audit lists), hard timeout, and output caps.
 import { spawn } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+import fsSync from 'node:fs';
 import { guardCommand, CommandGuardError } from '../security/cmdguard.js';
 
 export const execTool = {
@@ -67,6 +70,53 @@ function safeEnv() {
   return env;
 }
 
+// Kill the whole process tree, not just the shell: `/bin/sh -c "sleep 300 &"` or
+// `cmd /c npm run dev` leave descendants alive after a plain signal to the shell.
+// POSIX: the shell was spawned detached (its own process group) → signal -pid.
+// Windows: a fixed helper script runs `taskkill /T`; the OS-assigned pid is
+// passed through the environment, so no variable reaches an argument list.
+const TREE_KILL_HELPER = `
+// Fixed-content REVA helper: kills a process tree by pid (from env).
+const pid = Number(process.env.REVA_TREE_PID);
+if (Number.isInteger(pid) && pid > 0) {
+  require('child_process').spawn(
+    'taskkill', ['/pid', String(pid), '/T', '/F'],
+    { stdio: 'ignore', windowsHide: true },
+  ).unref();
+}
+`;
+
+let treeKillHelperPath = null;
+
+function windowsTreeKill(pid) {
+  if (!treeKillHelperPath) {
+    treeKillHelperPath = path.join(os.tmpdir(), `reva-tree-kill-${process.pid}.js`);
+    fsSync.writeFileSync(treeKillHelperPath, TREE_KILL_HELPER, { mode: 0o600 });
+  }
+  spawn(process.execPath, [treeKillHelperPath], {
+    env: { ...process.env, REVA_TREE_PID: String(pid) },
+    stdio: 'ignore',
+    windowsHide: true,
+  }).unref();
+}
+
+function killTree(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const pid = child.pid;
+  if (!Number.isInteger(pid) || pid <= 0) return; // OS-assigned, never user input
+  if (process.platform === 'win32') {
+    try {
+      windowsTreeKill(pid);
+    } catch { /* process already gone */ }
+  } else {
+    try {
+      process.kill(-pid, 'SIGKILL'); // negative pid = process group
+    } catch {
+      try { child.kill('SIGKILL'); } catch { /* process already gone */ }
+    }
+  }
+}
+
 export function runShell(command, { cwd, timeoutMs = 30000, maxOut = 200000, env = {}, signal } = {}) {
   return new Promise((resolve, reject) => {
     const isWin = process.platform === 'win32';
@@ -81,7 +131,9 @@ export function runShell(command, { cwd, timeoutMs = 30000, maxOut = 200000, env
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
-        // On Windows, spawn with shell args array; detaching not needed.
+        // POSIX only: the shell becomes a process-group leader so the whole
+        // tree can be signalled at once (killTree). Windows uses taskkill /T.
+        detached: !isWin,
       });
     } catch (err) {
       reject(err);
@@ -92,15 +144,21 @@ export function runShell(command, { cwd, timeoutMs = 30000, maxOut = 200000, env
     let stderr = '';
     let truncated = false;
     let settled = false;
+    let killedByUs = false;
+
+    const killMine = () => {
+      killedByUs = true;
+      killTree(child);
+    };
 
     const timer = setTimeout(() => {
       truncated = true;
-      try { child.kill('SIGKILL'); } catch { /* already dead */ }
+      killMine();
     }, timeoutMs);
 
     const onAbort = () => {
       if (settled) return;
-      try { child.kill('SIGKILL'); } catch { /* already dead */ }
+      killMine();
     };
     if (signal) {
       if (signal.aborted) onAbort();
@@ -142,7 +200,9 @@ export function runShell(command, { cwd, timeoutMs = 30000, maxOut = 200000, env
         text,
         exit_code: code,
         truncated,
-        timed_out: truncated && signalKilled !== null,
+        // Deterministic: we know we killed it, regardless of how the platform
+        // reports the termination (Windows taskkill yields code 1, no signal).
+        timed_out: truncated && killedByUs,
       });
     });
   });
