@@ -77,6 +77,10 @@ export class ProviderRegistry {
   }
 
   // Chat with retry. onEvent receives normalized stream events.
+  // Retries stop the moment anything has been streamed to the caller:
+  // re-sending after partial output would duplicate visible deltas and
+  // double-bill usage. Pre-stream failures (auth refused, connection reset,
+  // 429/5xx before the first event) remain retryable.
   async chat(providerName, {
     messages, tools, model, temperature, signal, onEvent,
     maxTokens, thinkingBudget, maxRetries = 3, extraHeaders,
@@ -86,6 +90,15 @@ export class ProviderRegistry {
     if (!useModel) {
       throw new ProviderError(`no model specified for provider "${providerName}"`, { provider: providerName, status: 400 });
     }
+    let streamed = false;
+    const guardedOnEvent = onEvent
+      ? (event) => {
+          if (event.type === 'text' || event.type === 'thinking' || event.type === 'tool_call') {
+            streamed = true;
+          }
+          onEvent(event);
+        }
+      : undefined;
     let lastError;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
@@ -97,7 +110,7 @@ export class ProviderRegistry {
           tools,
           temperature,
           signal,
-          onEvent,
+          onEvent: guardedOnEvent,
           maxTokens,
           thinkingBudget: thinkingBudget ?? resolved.options.thinking_budget,
           extraHeaders,
@@ -106,7 +119,7 @@ export class ProviderRegistry {
         lastError = err;
         if (err.name === 'AbortError') throw err;
         const retryable = err instanceof ProviderError ? err.retryable : false;
-        if (!retryable || attempt === maxRetries) break;
+        if (!retryable || attempt === maxRetries || streamed) break;
         const retryAfter = Number(err.headers?.get?.('retry-after')) * 1000;
         const delay = Number.isFinite(retryAfter) && retryAfter > 0
           ? retryAfter

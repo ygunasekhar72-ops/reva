@@ -113,6 +113,12 @@ export function createMockLlm({ port = 0 } = {}) {
     for (const c of chunkify(step.content ?? '')) {
       send(res, { choices: [{ delta: { content: c } }] });
     }
+    if (step.errorAfterContent) {
+      // mid-stream provider failure: deltas already delivered, then the error
+      send(res, { error: { message: step.errorAfterContent.message ?? 'mid-stream failure', code: step.errorAfterContent.status ?? 500 } });
+      res.end();
+      return;
+    }
     send(res, { choices: [{ delta: {}, finish_reason: step.tool_calls ? 'tool_calls' : 'stop' }] });
     send(res, { choices: [], usage: { prompt_tokens: 10, completion_tokens: 5 } });
     end(res);

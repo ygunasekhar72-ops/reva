@@ -106,6 +106,34 @@ test('openai: 401 fails fast (no retry), 500 retries then succeeds', async () =>
   });
 });
 
+test('openai: mid-stream failure after deltas is NOT retried (no duplicated output)', async () => {
+  await withMock('openai', async ({ mock, registry }) => {
+    mock.steps.push({ content: 'partial answer', errorAfterContent: { status: 500, message: 'stream blew up' } });
+    const deltas = [];
+    await assert.rejects(
+      () => registry.chat('mock', {
+        messages: MESSAGES,
+        maxRetries: 3,
+        onEvent: (e) => { if (e.type === 'text') deltas.push(e.delta); },
+      }),
+      /stream blew up/,
+    );
+    assert.equal(mock.requests.length, 1, 'mid-stream failure must not retry');
+    assert.equal(deltas.join(''), 'partial answer', 'deltas delivered exactly once');
+  });
+});
+
+test('openai: pre-stream 5xx still retries (existing behavior preserved)', async () => {
+  await withMock('openai', async ({ mock, registry }) => {
+    // error step before any content: body arrives with no streamed events
+    mock.steps.push({ error: { status: 503, body: { error: { message: 'not ready' } } } });
+    mock.steps.push({ content: 'ok now' });
+    const r = await registry.chat('mock', { messages: MESSAGES, maxRetries: 3 });
+    assert.equal(r.text, 'ok now');
+    assert.equal(mock.requests.length, 2);
+  });
+});
+
 test('openai: message/tool conversion shapes', () => {
   const converted = fromInternalMessages([
     { role: 'system', content: 'sys' },
