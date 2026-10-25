@@ -30,8 +30,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # GitHub ubuntu runners ship the Android SDK preinstalled at
+      # $ANDROID_HOME with standard licenses accepted — no setup action
+      # needed (android-actions/setup-android@v3 currently fails trying to
+      # install the obsolete 'tools' package). Just ensure licenses + the
+      # platform/build-tools AGP will use:
+      - name: Accept licenses & install platform 34
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
